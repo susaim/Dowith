@@ -14,6 +14,5 @@ python -m dowith flow ls        # 查看工作流阶段
 python -m dowith role add qa --from qa.md  # 导入角色
 python -m dowith next          # 下一阶段
 python -m dowith back          # 上一阶段
-```
 
 开发进展记录存放于 [docs/progress](docs/progress/) 目录，按日期总结已完成与待办事项。
