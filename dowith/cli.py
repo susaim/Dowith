@@ -6,7 +6,7 @@ import typer
 APP_DIR = Path('.dowith')
 app = typer.Typer(help="dowith (dw) — Role & Workflow Orchestrator for Claude/Gemini")
 
-DEFAULT_CONFIG = """mode: handoff
+DEFAULT_CONFIG = """mode: {mode}
 project: {project}
 roles:
   pm:
@@ -56,18 +56,45 @@ ROLE_UI = """# 角色：UI 工程师（UI）\n\n## 使命\n- 基于 PRD 产出 *
 ROLE_DEV = """# 角色：开发工程师（DEV）\n\n## 使命\n- 生成 **实施计划** 与 **目录/任务拆分**，确保可落地。\n\n## 输入清单\n- PRD（exchange/prd.md）\n- UI 规范（exchange/ui-spec.md）\n- 技术约束（语言/框架/部署/CI）\n\n## 产出格式（写入 exchange/dev-plan.md）\n- 《技术选型与目录结构》\n- 《子系统与接口清单》\n- 《任务拆分（按周里程碑）》\n- 《开发规范》（分支命名/提交规范/代码风格）\n- 《测试策略》（单测/集成/e2e）\n- 《风险与试错计划》\n\n## 风格与禁止\n- 避免伪代码海量堆砌；优先结构化清单与表格。\n- 若缺输入，先列缺失项并请求补齐后再输出。\n\n## 自检清单\n- [ ] 每个任务是否有完成定义（DoD）？\n- [ ] 每个接口是否有错误处理与超时？\n- [ ] 是否规划最小可演示路径（dev server/preview）？\n"""
 
 @app.command()
-def start(name: str = typer.Option("MyProject", "--name", help="project name")):
+
+def start(
+    name: str = typer.Option("MyProject", "--name", help="project name"),
+    mode: str = typer.Option(
+        "handoff",
+        "--mode",
+        help="execution mode",
+        case_sensitive=False,
+        show_default=True,
+        callback=None,
+    ),
+):
     """Initialize .dowith directory with defaults."""
+    mode = mode.lower()
+    if mode not in {"handoff", "managed-beta"}:
+        typer.echo("mode must be 'handoff' or 'managed-beta'")
+        raise typer.Exit(code=1)
+
     if APP_DIR.exists():
         typer.echo(".dowith already exists")
         raise typer.Exit(code=1)
     APP_DIR.mkdir(parents=True)
-    (APP_DIR / "roles").mkdir()
-    (APP_DIR / "exchange").mkdir()
-    (APP_DIR / "runs").mkdir()
-    (APP_DIR / "backups").mkdir()
+    # required directories
+    for d in [
+        "roles",
+        "exchange",
+        "agents",
+        "workflows",
+        "drafts",
+        "runs",
+        "backups",
+    ]:
+        (APP_DIR / d).mkdir()
+    # sentinel lock file
+    (APP_DIR / ".lock").touch()
     # config
-    (APP_DIR / "config.yaml").write_text(DEFAULT_CONFIG.format(project=name), encoding="utf-8")
+    (APP_DIR / "config.yaml").write_text(
+        DEFAULT_CONFIG.format(project=name, mode=mode), encoding="utf-8"
+    )
     # flow
     (APP_DIR / "flow.yaml").write_text(DEFAULT_FLOW, encoding="utf-8")
     # roles
@@ -79,9 +106,11 @@ def start(name: str = typer.Option("MyProject", "--name", help="project name")):
     (APP_DIR / "exchange" / "ui-spec.md").touch()
     (APP_DIR / "exchange" / "dev-plan.md").touch()
     # state
-    (APP_DIR / "state.json").write_text(json.dumps({"phase": "pm_spec", "role": "pm"}, ensure_ascii=False, indent=2), encoding="utf-8")
-    typer.echo("initialized .dowith")
-
+    (APP_DIR / "state.json").write_text(
+        json.dumps({"phase": "pm_spec", "role": "pm"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"initialized .dowith ({mode})")
 @app.command()
 def roles():
     """List roles and backends from config."""
@@ -105,6 +134,50 @@ def status():
         raise typer.Exit(code=1)
     state = json.loads(state_file.read_text(encoding="utf-8"))
     typer.echo(f"phase: {state.get('phase')} role: {state.get('role')}")
+
+
+role_app = typer.Typer(help="role management")
+app.add_typer(role_app, name="role")
+
+
+@role_app.command("add")
+def role_add(name: str, from_path: Path = typer.Option(..., "--from", exists=True, readable=True, help="source file")):
+    roles_dir = APP_DIR / "roles"
+    if not roles_dir.exists():
+        typer.echo("No roles directory. Run dw start first")
+        raise typer.Exit(code=1)
+    target = roles_dir / f"{name}.md"
+    if target.exists():
+        typer.echo(f"role {name} already exists")
+        raise typer.Exit(code=1)
+    shutil.copy(from_path, target)
+    typer.echo(f"added role {name}")
+
+
+@role_app.command("ls")
+def role_ls():
+    roles_dir = APP_DIR / "roles"
+    if not roles_dir.exists():
+        typer.echo("No roles directory. Run dw start first")
+        raise typer.Exit(code=1)
+    for p in sorted(roles_dir.glob("*.md")):
+        typer.echo(p.stem)
+
+
+flow_app = typer.Typer(help="flow management")
+app.add_typer(flow_app, name="flow")
+
+
+@flow_app.command("ls")
+def flow_ls():
+    import yaml
+    flow_file = APP_DIR / "flow.yaml"
+    if not flow_file.exists():
+        typer.echo("No flow.yaml found. Run dw start first")
+        raise typer.Exit(code=1)
+    data = yaml.safe_load(flow_file.read_text(encoding="utf-8")).get("phases", [])
+    for p in data:
+        typer.echo(f"{p.get('id')}: {p.get('role')}")
 
 
 def _load_flow_and_state():

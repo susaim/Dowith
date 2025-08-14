@@ -13,11 +13,17 @@ def run(cmd, cwd):
 
 
 def test_start_creates_structure(tmp_path):
-    run([sys.executable, '-m', 'dowith', 'start', '--name', 'Demo'], cwd=tmp_path)
+    run([sys.executable, '-m', 'dowith', 'start', '--name', 'Demo', '--mode', 'managed-beta'], cwd=tmp_path)
     base = tmp_path / '.dowith'
-    assert (base / 'config.yaml').exists()
+    cfg = base / 'config.yaml'
+    assert cfg.exists()
+    assert 'mode: managed-beta' in cfg.read_text()
     assert (base / 'flow.yaml').exists()
     assert (base / 'roles' / 'pm.md').exists()
     assert (base / 'roles' / 'ui.md').exists()
     assert (base / 'roles' / 'dev.md').exists()
+    assert (base / 'agents').exists()
+    assert (base / 'workflows').exists()
+    assert (base / 'drafts').exists()
+    assert (base / '.lock').exists()
     assert json.loads((base / 'state.json').read_text()) == {'phase': 'pm_spec', 'role': 'pm'}
