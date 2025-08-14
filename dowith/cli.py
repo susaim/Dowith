@@ -1,4 +1,6 @@
 import json
+import subprocess
+import datetime
 from pathlib import Path
 import shutil
 import typer
@@ -230,6 +232,76 @@ def back():
     state["role"] = prev.get("role")
     state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     typer.echo(f"phase: {state['phase']} role: {state['role']}")
+
+
+def _backup_exchange() -> Path:
+    """Copy exchange/ to backups/<timestamp>/ and return path."""
+    exchange_dir = APP_DIR / "exchange"
+    if not exchange_dir.exists():
+        raise RuntimeError("exchange directory missing")
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = APP_DIR / "backups" / ts
+    shutil.copytree(exchange_dir, target)
+    return target
+
+
+def _run_backend(role: str, seed: str) -> None:
+    """Simulate backend interaction for role and log output."""
+    import yaml
+    cfg_file = APP_DIR / "config.yaml"
+    if not cfg_file.exists():
+        typer.echo("No .dowith/config.yaml found")
+        raise typer.Exit(code=1)
+    data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    role_cfg = data.get("roles", {}).get(role)
+    if not role_cfg:
+        typer.echo(f"role {role} not found in config")
+        raise typer.Exit(code=1)
+    backend = role_cfg.get("backend", "echo")
+    proc = subprocess.run(["echo", seed], capture_output=True, text=True)
+    stdout = proc.stdout
+    stderr = proc.stderr
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = APP_DIR / "runs" / ts
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "log.txt").write_text(
+        f"role: {role}\nbackend: {backend}\nseed: {seed}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        encoding="utf-8",
+    )
+    # update state summary
+    state_file = APP_DIR / "state.json"
+    if state_file.exists():
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["last_summary"] = stdout.strip()[:200]
+        state_file.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    # backup
+    try:
+        _backup_exchange()
+        typer.echo("backup saved")
+    except Exception as e:
+        typer.echo(f"backup failed: {e}")
+    if stdout:
+        typer.echo(stdout.strip())
+
+
+def _register_role_commands() -> None:
+    """Register top-level commands for each role in config."""
+    cfg_file = APP_DIR / "config.yaml"
+    if not cfg_file.exists():
+        return
+    import yaml
+    data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    for role_name in data.get("roles", {}).keys():
+        def _make_cmd(name: str):
+            @app.command(name=name)
+            def _cmd(seed: str = typer.Option("", "--seed", help="seed message")):
+                _run_backend(name, seed)
+        _make_cmd(role_name)
+
+
+_register_role_commands()
 
 if __name__ == "__main__":
     app()
