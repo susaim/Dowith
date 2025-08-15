@@ -1,6 +1,9 @@
 import json
 import subprocess
 import datetime
+import os
+import signal
+import sys
 from pathlib import Path
 import shutil
 import typer
@@ -182,6 +185,38 @@ def flow_ls():
         typer.echo(f"{p.get('id')}: {p.get('role')}")
 
 
+daemon_app = typer.Typer(help="daemon management")
+app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("start")
+def daemon_start(interval: float = typer.Option(60.0, "--interval", help="backup interval in seconds")):
+    pid_file = APP_DIR / "daemon.pid"
+    if pid_file.exists():
+        typer.echo("daemon already running")
+        raise typer.Exit(code=1)
+    cmd = [sys.executable, "-m", "dowith.daemon", "--interval", str(interval)]
+    proc = subprocess.Popen(cmd)
+    pid_file.write_text(str(proc.pid), encoding="utf-8")
+    typer.echo(f"daemon started (pid {proc.pid})")
+
+
+@daemon_app.command("stop")
+def daemon_stop():
+    pid_file = APP_DIR / "daemon.pid"
+    if not pid_file.exists():
+        typer.echo("daemon not running")
+        raise typer.Exit(code=1)
+    pid = int(pid_file.read_text())
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception as e:
+        typer.echo(f"failed to stop daemon: {e}")
+        raise typer.Exit(code=1)
+    pid_file.unlink()
+    typer.echo("daemon stopped")
+
+
 def _load_flow_and_state():
     import yaml
     flow_file = APP_DIR / "flow.yaml"
@@ -246,21 +281,45 @@ def _backup_exchange() -> Path:
 
 
 def _run_backend(role: str, seed: str) -> None:
-    """Simulate backend interaction for role and log output."""
+    """Run configured backend CLI for ``role`` and log output."""
     import yaml
+
     cfg_file = APP_DIR / "config.yaml"
     if not cfg_file.exists():
         typer.echo("No .dowith/config.yaml found")
         raise typer.Exit(code=1)
+
     data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
     role_cfg = data.get("roles", {}).get(role)
     if not role_cfg:
         typer.echo(f"role {role} not found in config")
         raise typer.Exit(code=1)
+
     backend = role_cfg.get("backend", "echo")
-    proc = subprocess.run(["echo", seed], capture_output=True, text=True)
+    model = role_cfg.get("model")
+    cmd = [backend]
+    # Only pass model flag for known backends that accept it
+    if model and backend in {"claude", "gemini"}:
+        cmd += ["--model", model]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=seed,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # gracefully fallback to echo if backend CLI is missing
+        proc = subprocess.run(
+            ["echo", seed], capture_output=True, text=True, check=False
+        )
+        backend = "echo"  # record fallback backend
+
     stdout = proc.stdout
     stderr = proc.stderr
+
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = APP_DIR / "runs" / ts
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +327,7 @@ def _run_backend(role: str, seed: str) -> None:
         f"role: {role}\nbackend: {backend}\nseed: {seed}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         encoding="utf-8",
     )
+
     # update state summary
     state_file = APP_DIR / "state.json"
     if state_file.exists():
@@ -276,12 +336,14 @@ def _run_backend(role: str, seed: str) -> None:
         state_file.write_text(
             json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
     # backup
     try:
         _backup_exchange()
         typer.echo("backup saved")
     except Exception as e:
         typer.echo(f"backup failed: {e}")
+
     if stdout:
         typer.echo(stdout.strip())
 
